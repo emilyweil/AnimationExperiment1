@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
-<title>Confetti Rake</title>
+<title>Animation Experiment 1</title>
 <meta name="description" content="Click anywhere to celebrate. Rake up the confetti.">
 <meta name="theme-color" content="#ffffff">
 <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>🎊</text></svg>">
@@ -150,7 +150,7 @@
     canvas.width = Math.round(W * dpr);
     canvas.height = Math.round(H * dpr);
     if (!rake.placed) {
-      rake.x = W - Math.min(170, W * 0.3);
+      rake.x = W - Math.min(170, W * 0.3) * (TOUCH ? 0.5 : 1);  // closer to the edge on phones
       rake.y = H - Math.min(150, H * 0.25);
     }
     rake.x = Math.min(Math.max(rake.x, 0), W);
