@@ -101,6 +101,7 @@
     transition: opacity 150ms ease, transform 150ms ease;
   }
   .clear.used::after { display: none; }
+  .clear.intro::after { opacity: 1; transform: translate(0, -50%); }
   .clear:hover::after,
   .clear:focus-visible::after {
     opacity: 1;
@@ -116,7 +117,7 @@
 <canvas id="c" aria-label="Confetti field. Click to burst confetti; drag the rake at lower right to push it around."></canvas>
 <p class="label welcome" id="welcome">click anywhere to celebrate</p>
 <span class="label rake-label" id="rakeLabel" aria-hidden="true">rake</span>
-<button class="clear" id="clear" type="button" aria-label="Clear the screen"></button>
+<button class="clear intro" id="clear" type="button" aria-label="Clear the screen"></button>
 
 <script>
 (() => {
@@ -133,6 +134,17 @@
   const MAX = TOUCH ? 5000 : 9000;  // oldest pieces drop off past this
   const GRAB = TOUCH ? 28 : 14;     // how close counts as touching the rake
   if (TOUCH) welcome.textContent = 'tap anywhere to celebrate';
+
+  // Intro: welcome message plus the "rake" and "clear" labels are visible
+  // until the very first click or tap anywhere, then all of them go away.
+  let intro = true;
+  window.addEventListener('pointerdown', () => {
+    if (!intro) return;
+    intro = false;
+    welcome.classList.add('gone');
+    rakeLabel.classList.remove('show');
+    document.getElementById('clear').classList.remove('intro');
+  }, true);
   const HEAD = 150;             // rake head length (px)
   const HANDLE = 120;           // visible handle length (px)
 
@@ -375,9 +387,9 @@
 
     ctx.globalAlpha = 1;
     // keep the hover label just above the rake's upper end
-    // touch screens can't hover, so the label shows until the rake is first moved
-    if (TOUCH && !rakeUsed && !rake.dragging) rakeLabel.classList.add('show');
-    if ((overRake || TOUCH) && !rake.dragging) {
+    // on first load every label shows; after that, only on hover
+    if (intro) rakeLabel.classList.add('show');
+    if ((overRake || intro) && !rake.dragging) {
       const g0 = rakeGeom();
       const top = g0.a[1] < g0.b[1] ? g0.a : g0.b;
       rakeLabel.style.left = top[0] + 'px';
@@ -421,7 +433,6 @@
       canvas.classList.add('raking');
     } else {
       burst(x, y);
-      welcome.classList.add('gone');
     }
   });
 
