@@ -1,0 +1,506 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Fall Celebrations</title>
+<meta name="description" content="Click anywhere to celebrate. Rake up the confetti.">
+<meta name="theme-color" content="#ffffff">
+<link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>🎉</text></svg>">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Instrument+Sans:wght@400;500&display=swap" rel="stylesheet">
+<style>
+  :root {
+    color-scheme: light;
+    --bg: #ffffff;
+    --ink: #1c1c1e;
+    --muted: #8a8a8f;
+    box-sizing: border-box;
+    padding-top: env(safe-area-inset-top, 0px);
+    padding-bottom: env(safe-area-inset-bottom, 0px);
+  }
+  *, *::before, *::after { box-sizing: inherit; }
+  html, body { height: 100%; margin: 0; }
+  body {
+    background: var(--bg);
+    color: var(--ink);
+    font-family: "Instrument Sans", system-ui, -apple-system, "Segoe UI", sans-serif;
+    overflow: hidden;
+    -webkit-user-select: none;
+    user-select: none;
+    -webkit-touch-callout: none;
+    -webkit-tap-highlight-color: transparent;
+    overscroll-behavior: none;
+  }
+  canvas {
+    position: fixed;
+    inset: 0;
+    width: 100%;
+    height: 100%;
+    display: block;
+    touch-action: none;
+    cursor: crosshair;
+  }
+  canvas.over-rake { cursor: grab; }
+  .label {
+    position: fixed;
+    font: 500 0.9rem/1 "Instrument Sans", system-ui, -apple-system, "Segoe UI", sans-serif;
+    color: #000;
+    white-space: nowrap;
+    pointer-events: none;
+    margin: 0;
+    transition: opacity 150ms ease;
+  }
+  .rake-label { opacity: 0; transform: translate(-50%, -100%); }
+  .rake-label.show { opacity: 1; }
+  .welcome {
+    left: 50%;
+    top: 50%;
+    transform: translate(-50%, -50%);
+    transition: opacity 400ms ease;
+  }
+  .welcome.gone { opacity: 0; }
+  @media (prefers-reduced-motion: reduce) {
+    .label { transition: none; }
+  }
+  canvas.raking { cursor: grabbing; }
+  .clear {
+    position: fixed;
+    top: calc(env(safe-area-inset-top, 0px) + 18px);
+    right: 18px;
+    width: 36px;
+    height: 36px;
+    display: grid;
+    place-items: center;
+    background: none;
+    border: 0;
+    padding: 0;
+    border-radius: 6px;
+    cursor: pointer;
+    color: #000;
+  }
+  .clear::before {
+    content: "";
+    width: 19px;
+    height: 19px;
+    border: 3.5px solid currentColor;
+    border-radius: 2px;
+  }
+  .clear::after {
+    content: "clear";
+    position: absolute;
+    right: calc(100% + 4px);
+    top: 50%;
+    transform: translate(4px, -50%);
+    font: 500 0.9rem/1 "Instrument Sans", system-ui, -apple-system, "Segoe UI", sans-serif;
+    color: #000;
+    white-space: nowrap;
+    opacity: 0;
+    pointer-events: none;
+    transition: opacity 150ms ease, transform 150ms ease;
+  }
+  .clear.used::after { display: none; }
+  .clear.intro::after { opacity: 1; transform: translate(0, -50%); }
+  /* only real hover devices (mouse/trackpad) get the rollover label */
+  @media (hover: hover) and (pointer: fine) {
+    .clear:hover::after {
+      opacity: 1;
+      transform: translate(0, -50%);
+    }
+  }
+  .clear:focus-visible::after {
+    opacity: 1;
+    transform: translate(0, -50%);
+  }
+  @media (prefers-reduced-motion: reduce) {
+    .clear::after { transition: none; }
+  }
+  .clear:focus-visible { outline: 2px solid var(--ink); outline-offset: 2px; }
+</style>
+</head>
+<body>
+<canvas id="c" aria-label="Confetti field. Click to burst confetti; drag the rake at lower right to push it around."></canvas>
+<p class="label welcome" id="welcome">click anywhere to celebrate</p>
+<span class="label rake-label" id="rakeLabel" aria-hidden="true">rake</span>
+<button class="clear intro" id="clear" type="button" aria-label="Clear the screen"></button>
+
+<script>
+(() => {
+  const canvas = document.getElementById('c');
+  const welcome = document.getElementById('welcome');
+  const rakeLabel = document.getElementById('rakeLabel');
+  let overRake = false;
+  let rakeUsed = false;   // once the rake has been moved, stop showing its label
+  const ctx = canvas.getContext('2d');
+
+  const COLORS = ['#ff4d6d', '#ffbe0b', '#fb5607', '#3a86ff', '#8338ec', '#06d6a0', '#ff8fab', '#118ab2'];
+  // Touch screens: bigger grab area, lighter particle load, tap wording
+  const TOUCH = window.matchMedia('(pointer: coarse)').matches;
+  const MAX = TOUCH ? 5000 : 9000;  // oldest pieces drop off past this
+  const GRAB = TOUCH ? 28 : 14;     // how close counts as touching the rake
+  if (TOUCH) welcome.textContent = 'tap anywhere to celebrate';
+
+  // Intro: welcome message plus the "rake" and "clear" labels are visible
+  // until the very first click or tap anywhere, then all of them go away.
+  let intro = true;
+  window.addEventListener('pointerdown', () => {
+    if (!intro) return;
+    intro = false;
+    welcome.classList.add('gone');
+    rakeLabel.classList.remove('show');
+    document.getElementById('clear').classList.remove('intro');
+  }, true);
+  const HEAD = 150;             // rake head length (px)
+  const HANDLE = 120;           // visible handle length (px)
+
+  let W = 0, H = 0, dpr = 1;
+  let parts = [];
+
+  // Rake: (x, y) is the center of the head; ang is the push direction.
+  // The head runs perpendicular to ang; the handle trails behind it.
+  const rake = { x: 0, y: 0, ang: Math.PI, dragging: false, gx: 0, gy: 0, placed: false };
+
+  function resize() {
+    dpr = Math.min(window.devicePixelRatio || 1, 2);
+    W = window.innerWidth;
+    H = window.innerHeight;
+    canvas.width = Math.round(W * dpr);
+    canvas.height = Math.round(H * dpr);
+    if (!rake.placed) {
+      rake.x = W - Math.min(170, W * 0.3) * (TOUCH ? 0.5 : 1);  // closer to the edge on phones
+      rake.y = H - Math.min(150, H * 0.25);
+    }
+    rake.x = Math.min(Math.max(rake.x, 0), W);
+    rake.y = Math.min(Math.max(rake.y, 0), H);
+    for (const p of parts) clampPiece(p);
+  }
+
+  function clampPiece(p) {
+    p.x = Math.min(Math.max(p.x, 2), W - 2);
+    p.y = Math.min(Math.max(p.y, 2), H - 2);
+  }
+
+  // Each burst picks one size band; pieces vary within it.
+  const TIERS = [[1, 1.5], [1.5, 2.2], [2.2, 3]];
+
+  // Heart emoji, pre-drawn once so thousands of them stay fast
+  const HEARTS = ['❤️', '🧡', '💛', '💚', '💙', '💜', '🩷', '🩵'].map((ch) => {
+    const c = document.createElement('canvas');
+    c.width = c.height = 72;
+    const g = c.getContext('2d');
+    g.font = '56px "Apple Color Emoji", "Segoe UI Emoji", "Noto Color Emoji", sans-serif';
+    g.textAlign = 'center';
+    g.textBaseline = 'middle';
+    g.fillText(ch, 36, 40);
+    return c;
+  });
+
+  // Each burst lands in its own lumpy blob a little below the click.
+  // The outline is a circle warped by a few random wobbles, then stretched
+  // and tilted, so no two blobs match and none are symmetrical.
+  // Shrink bursts on small screens so they fit
+  function viewScale() { return Math.min(1, Math.max(0.55, Math.min(W, H) / 800)); }
+
+  function makeBlob(x, y, scale) {
+    const R = (95 + Math.random() * 55) * scale * viewScale();
+    const waves = [2, 3, 5].map((k) => ({ k, amp: 0.1 + Math.random() * 0.22, ph: Math.random() * Math.PI * 2 }));
+    const stretch = 0.7 + Math.random() * 0.6;
+    const tilt = (Math.random() - 0.5) * 1.2;
+    const cy = Math.min(y + 140 + Math.random() * 90, H - R * 0.8 - 12);
+    return {
+      cx: x + (Math.random() - 0.5) * 50,
+      cy,
+      pick() {
+        const t = Math.random() * Math.PI * 2;
+        let r = 1;
+        for (const w of waves) r += w.amp * Math.sin(w.k * t + w.ph);
+        r = R * Math.max(0.35, r) * Math.pow(Math.random(), 0.6);
+        const ex = Math.cos(t) * r * stretch, ey = Math.sin(t) * r * 0.75;
+        return [this.cx + ex * Math.cos(tilt) - ey * Math.sin(tilt),
+                this.cy + ex * Math.sin(tilt) + ey * Math.cos(tilt)];
+      }
+    };
+  }
+
+  function burst(x, y) {
+    const [lo, hi] = TIERS[(Math.random() * TIERS.length) | 0];
+    const blob = makeBlob(x, y, 0.7 + lo * 0.35);
+    const hearts = Math.random() < 0.6;    // a few more heart bursts than confetti
+    // heart bursts are always one color; confetti is always mixed
+    const oneHeart = HEARTS[(Math.random() * HEARTS.length) | 0];
+    for (let i = 0; i < (hearts ? 80 : 120); i++) {
+      const size = lo + Math.random() * (hi - lo);
+      const [tx, ty] = blob.pick();
+      const a = Math.random() * Math.PI * 2;
+      const s = 3 + Math.random() * 9;
+      parts.push({
+        x, y,
+        vx: Math.cos(a) * s,
+        vy: Math.sin(a) * s - 3,
+        // where this piece comes to rest: a ways below the click, never at the very bottom
+        tx: Math.min(Math.max(tx, 4), W - 4),
+        landY: Math.min(ty, H - 8),
+        heart: hearts ? oneHeart : null,
+        rot: hearts ? (Math.random() - 0.5) * 1.2 : Math.random() * Math.PI * 2,
+        spin: (Math.random() - 0.5) * (hearts ? 0.08 : 0.35),
+        flip: Math.random() * Math.PI * 2,
+        flipSpeed: 0.08 + Math.random() * 0.12,
+        sway: Math.random() * Math.PI * 2,
+        w: (5 + Math.random() * 5) * size * (0.8 + 0.2 * viewScale()),
+        h: (3 + Math.random() * 3) * size * (0.8 + 0.2 * viewScale()),
+        flat: 0.75 + Math.random() * 0.25,
+        color: COLORS[(Math.random() * COLORS.length) | 0],
+        settled: false
+      });
+    }
+    if (parts.length > MAX) parts.splice(0, parts.length - MAX);
+  }
+
+  // Distance from point to segment
+  function segDist(px, py, ax, ay, bx, by) {
+    const dx = bx - ax, dy = by - ay;
+    const t = Math.max(0, Math.min(1, ((px - ax) * dx + (py - ay) * dy) / (dx * dx + dy * dy)));
+    return Math.hypot(px - (ax + dx * t), py - (ay + dy * t));
+  }
+
+  function rakeGeom() {
+    const hx = Math.cos(rake.ang), hy = Math.sin(rake.ang);   // push direction
+    const nx = -hy, ny = hx;                                  // along the head
+    return {
+      hx, hy, nx, ny,
+      a: [rake.x + nx * HEAD / 2, rake.y + ny * HEAD / 2],
+      b: [rake.x - nx * HEAD / 2, rake.y - ny * HEAD / 2],
+      grip: [rake.x - hx * HANDLE, rake.y - hy * HANDLE]
+    };
+  }
+
+  function hitRake(x, y) {
+    const g = rakeGeom();
+    return segDist(x, y, g.a[0], g.a[1], g.b[0], g.b[1]) < GRAB;
+  }
+
+  // Move the rake head from (x0,y0) to (x1,y1); anything the head
+  // sweeps over gets pushed ahead of it and carried sideways with it.
+  function sweep(x0, y0, x1, y1) {
+    const hx = Math.cos(rake.ang), hy = Math.sin(rake.ang);
+    const nx = -hy, ny = hx;
+    const mx = x1 - x0, my = y1 - y0;
+    const d = mx * hx + my * hy;       // forward travel
+    const side = mx * nx + my * ny;    // sideways travel
+    const fwd = Math.max(0, d);
+    const half = HEAD / 2;
+    for (const p of parts) {
+      if (!p.settled) continue;        // only move what's landed
+      const rx = p.x - x0, ry = p.y - y0;
+      const u = rx * hx + ry * hy;
+      // catch anything the head crossed, plus a band just behind it,
+      // so pieces don't slip through while the rake is turning
+      if (u < -8 || u > fwd + 4) continue;
+      const v = rx * nx + ry * ny;
+      const r = p.w * 0.5 + 2;
+      if (v < -half - r || v > half + r) continue;
+      // a few stragglers slip under the head and stay put, so a raked path
+      // through a pile is mostly clear, never spotless
+      const now = performance.now();
+      if (p.slipT && now - p.slipT < 500) continue;   // already slipped under this pass
+      if (Math.random() < 0.0002 * fwd) { p.slipT = now; continue; }
+      p.easing = false;
+      const nu = fwd + 2 + Math.random() * 5;
+      const nv = v + side;
+      p.x = x0 + hx * nu + nx * nv;
+      p.y = y0 + hy * nu + ny * nv;
+      p.rot += (Math.random() - 0.5) * 0.3;
+      // now and then a piece tumbles over the head, like a leaf
+      if (p.settled && Math.random() < Math.min(0.015, 0.002 * fwd)) {
+        p.settled = false;
+        p.tx = p.x + hx * 10;
+        p.easing = false;
+        p.landY = p.y + 10;
+        p.vx = hx * (1 + Math.random() * 2);
+        p.vy = -2 - Math.random() * 2.5;
+        p.spin = (Math.random() - 0.5) * 0.35;
+      }
+      // pushed off the edge of the screen: gone
+      if (p.x < 0 || p.x > W || p.y < 0 || p.y > H) p.dead = true;
+    }
+  }
+
+  // Landed pieces linger, then fade away slowly
+  const LINGER = 8000;   // ms before fading starts
+  const FADE = 20000;    // ms to fade out completely
+
+  function step() {
+    const now = performance.now();
+    let gone = 0;
+    for (const p of parts) {
+      if (p.landedAt) {
+        const t = now - p.landedAt - LINGER;
+        p.alpha = t <= 0 ? 1 : 1 - t / FADE;
+        if (p.alpha <= 0) gone++;
+      }
+    }
+    if (gone) parts = parts.filter((p) => !(p.landedAt && p.alpha <= 0));
+    for (const p of parts) {
+      if (p.settled) {
+        if (p.easing) {   // rolling into its spot on the pile
+          p.x += (p.tx - p.x) * 0.3;
+          p.y += (p.ty - p.y) * 0.3;
+          if (Math.abs(p.tx - p.x) + Math.abs(p.ty - p.y) < 0.3) { p.x = p.tx; p.y = p.ty; p.easing = false; }
+        }
+        continue;
+      }
+      p.vy += 0.22;
+      p.vx *= 0.955;
+      p.vy *= 0.975;
+      if (p.vy > 2.6) p.vy = 2.6 + (p.vy - 2.6) * 0.8; // flutter-limited fall
+      p.sway += 0.06;
+      p.x += p.vx + Math.sin(p.sway) * 0.6;
+      p.y += p.vy;
+      p.rot += p.spin;
+      p.flip += p.flipSpeed;
+      if (p.x < 2) { p.x = 2; p.vx = Math.abs(p.vx) * 0.4; }
+      if (p.x > W - 2) { p.x = W - 2; p.vx = -Math.abs(p.vx) * 0.4; }
+      if (p.vy > 0) p.x += (p.tx - p.x) * 0.04;   // drift toward its spot in the blob
+      if (p.vy > 0 && p.y >= p.landY) {
+        p.ty = p.landY;
+        p.settled = true;
+        p.easing = true;
+        if (!p.landedAt) { p.landedAt = performance.now(); p.alpha = 1; }  // keep the original fade clock
+      }
+    }
+  }
+
+  function drawPiece(p) {
+    ctx.globalAlpha = p.alpha == null ? 1 : Math.max(0, p.alpha);
+    const sy = p.settled ? (p.heart ? 1 : p.flat) : (p.heart ? 0.6 + 0.4 * Math.cos(p.flip) : Math.cos(p.flip));
+    const cos = Math.cos(p.rot), sin = Math.sin(p.rot);
+    ctx.setTransform(cos * dpr, sin * dpr, -sin * sy * dpr, cos * sy * dpr, p.x * dpr, p.y * dpr);
+    if (p.heart) {
+      const d = p.w * 1.3;
+      ctx.drawImage(p.heart, -d / 2, -d / 2, d, d);
+      return;
+    }
+    ctx.fillStyle = p.color;
+    ctx.fillRect(-p.w / 2, -p.h / 2, p.w, p.h);
+  }
+
+  function draw() {
+    ctx.setTransform(1, 0, 0, 1, 0, 0);
+    ctx.clearRect(0, 0, canvas.width, canvas.height);
+
+    for (const p of parts) if (p.settled) drawPiece(p);
+
+    ctx.globalAlpha = 1;
+    // keep the hover label just above the rake's upper end
+    // on first load every label shows; after that, only on hover
+    if (intro) rakeLabel.classList.add('show');
+    if ((overRake || intro) && !rake.dragging) {
+      const g0 = rakeGeom();
+      const top = g0.a[1] < g0.b[1] ? g0.a : g0.b;
+      rakeLabel.style.left = top[0] + 'px';
+      rakeLabel.style.top = (top[1] - 12) + 'px';
+    }
+    // rake head
+    const g = rakeGeom();
+    ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+    ctx.strokeStyle = '#1c1c1e';
+    ctx.fillStyle = '#1c1c1e';
+    ctx.lineCap = 'round';
+    ctx.lineWidth = rake.dragging ? 4 : 3.5;
+    ctx.beginPath();
+    ctx.moveTo(g.a[0], g.a[1]);
+    ctx.lineTo(g.b[0], g.b[1]);
+    ctx.stroke();
+
+    for (const p of parts) if (!p.settled) drawPiece(p);
+  }
+
+  function loop() {
+    step();
+    draw();
+    requestAnimationFrame(loop);
+  }
+
+  function pos(e) {
+    const r = canvas.getBoundingClientRect();
+    return { x: e.clientX - r.left, y: e.clientY - r.top };
+  }
+
+  canvas.addEventListener('pointerdown', (e) => {
+    const { x, y } = pos(e);
+    if (hitRake(x, y)) {
+      rake.dragging = true;
+      rakeLabel.classList.remove('show');
+      rake.placed = true;
+      rake.gx = rake.x - x;
+      rake.gy = rake.y - y;
+      canvas.setPointerCapture(e.pointerId);
+      canvas.classList.add('raking');
+    } else {
+      burst(x, y);
+    }
+  });
+
+  canvas.addEventListener('pointermove', (e) => {
+    const { x, y } = pos(e);
+    if (!rake.dragging) {
+      overRake = hitRake(x, y);
+      canvas.classList.toggle('over-rake', overRake);
+      rakeLabel.classList.toggle('show', overRake && !rakeUsed && !TOUCH);
+      return;
+    }
+    const tx = Math.min(Math.max(x + rake.gx, 0), W);
+    const ty = Math.min(Math.max(y + rake.gy, 0), H);
+    const mx = tx - rake.x, my = ty - rake.y;
+    const dist = Math.hypot(mx, my);
+    if (dist < 0.5) return;
+    rakeUsed = true;
+    // the head turns to face the way you push, easing so it doesn't jitter
+    const target = Math.atan2(my, mx);
+    let diff = target - rake.ang;
+    diff = Math.atan2(Math.sin(diff), Math.cos(diff));
+    const turn = Math.min(1, dist / 25) * 0.35;
+    // sweep in small steps so fast drags still catch everything
+    const steps = Math.max(1, Math.ceil(dist / 4));
+    let px = rake.x, py = rake.y;
+    for (let s = 1; s <= steps; s++) {
+      rake.ang += diff * turn / steps;
+      const sx = rake.x + mx * (s / steps), sy = rake.y + my * (s / steps);
+      sweep(px, py, sx, sy);
+      px = sx; py = sy;
+    }
+    rake.x = tx;
+    rake.y = ty;
+    parts = parts.filter((p) => !p.dead);
+  });
+
+  function endDrag(e) {
+    if (!rake.dragging) return;
+    rake.dragging = false;
+    const r0 = canvas.getBoundingClientRect();
+    overRake = hitRake(e.clientX - r0.left, e.clientY - r0.top);
+    rakeLabel.classList.toggle('show', overRake && !rakeUsed && !TOUCH);
+    canvas.classList.remove('raking');
+    try { canvas.releasePointerCapture(e.pointerId); } catch (_) {}
+  }
+  canvas.addEventListener('pointerup', endDrag);
+  canvas.addEventListener('pointerleave', () => {
+    if (rake.dragging) return;
+    overRake = false;
+    rakeLabel.classList.remove('show');
+  });
+  canvas.addEventListener('pointercancel', endDrag);
+
+  document.getElementById('clear').addEventListener('click', (e) => {
+    parts = [];
+    e.currentTarget.classList.add('used');  // label has done its job
+  });
+
+  window.addEventListener('resize', resize);
+  resize();
+  requestAnimationFrame(loop);
+})();
+</script>
+</body>
+</html>
